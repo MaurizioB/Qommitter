@@ -39,10 +39,14 @@ then logout and login again, or run this in the current console:
 
 ::
 
-    . ~/.bashrc
+    $ . ~/.bashrc
 
 after that, you only need to run ``qommitter`` from a (sub)directory of
-a git repo.
+a git repo. Of course, you can choose any name you want instead of
+``qommitter``.
+
+Qommitter might be used as a default editor for git, but I've not tested
+it yet, so do it at your own risk.
 
 (Almost) known issues
 ---------------------

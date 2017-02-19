@@ -16,6 +16,8 @@ SAVED, MODIFIED, NEW = range(3)
 states = ['Saved', 'Unsaved', 'New']
 icons = ['save', 'warning', 'refresh']
 
+COMMIT, UNTRACK = range(2)
+
 class StatusIcon(QtGui.QWidget):
     def __init__(self, parent, state=NEW):
         QtGui.QWidget.__init__(self, parent)
@@ -36,10 +38,14 @@ class Highlighter(QtGui.QSyntaxHighlighter):
     def __init__(self, parent, limit=default_limit, *args, **kwargs):
         QtGui.QSyntaxHighlighter.__init__(self, parent, *args, **kwargs)
         self.limit = limit
-        self.title_line = -1
+        self.summary_line = -1
         self.valid = QtGui.QTextCharFormat()
         self.valid.setFont(QtGui.QFont('Bitstream Vera Sans Mono', 10))
         self.valid.setForeground(QtGui.QColor('black'))
+        self.commit_list = QtGui.QTextCharFormat()
+        self.commit_list.setForeground(QtGui.QColor('green'))
+        self.untrack_list = QtGui.QTextCharFormat()
+        self.untrack_list.setForeground(QtGui.QColor('red'))
         self.over = QtGui.QTextCharFormat()
         self.over.setForeground(QtGui.QColor('red'))
         self.summary = QtGui.QTextCharFormat(self.valid)
@@ -58,15 +64,31 @@ class Highlighter(QtGui.QSyntaxHighlighter):
         self.endspace.setBackground(QtGui.QColor(220, 220, 220))
         self.space_rx = QtCore.QRegExp(r'\ ')
 
-    def set_title_line(self, title_line):
-        if title_line == self.title_line: return
-        self.title_line = title_line
+    def set_summary_line(self, summary_line):
+        if summary_line == self.summary_line: return
+        self.summary_line = summary_line
         self.rehighlight()
 
     def highlightBlock(self, text):
-        if text.contains('#'):
-            self.setFormat(text.indexOf('#'), len(text)-text.indexOf('#'), self.comment)
-        if self.currentBlock().firstLineNumber() == self.title_line:
+        if text.startsWith('#'):
+            self.setFormat(0, len(text), self.comment)
+            if text == '# Changes to be committed:':
+                self.setCurrentBlockState(COMMIT)
+            elif text == '# Untracked files:':
+                self.setCurrentBlockState(UNTRACK)
+            elif self.previousBlockState() == COMMIT:
+                self.setFormat(1, len(text), self.commit_list)
+                if len(text.simplified()) == 1:
+                    self.setCurrentBlockState(-1)
+                else:
+                    self.setCurrentBlockState(COMMIT)
+            elif self.previousBlockState() == UNTRACK:
+                self.setFormat(1, len(text), self.untrack_list)
+                if len(text.simplified()) == 1:
+                    self.setCurrentBlockState(-1)
+                else:
+                    self.setCurrentBlockState(UNTRACK)
+        if self.currentBlock().firstLineNumber() == self.summary_line:
             self.setFormat(0, len(text), self.summary)
             if len(text) > summary_limit:
                 self.setFormat(summary_limit, len(text)-summary_limit, self.summary_over)
@@ -98,9 +120,11 @@ class LineNumbers(QtGui.QWidget):
         self.main.lineNumbersPaintEvent(event)
 
 class TextEdit(QtGui.QPlainTextEdit):
-    title_line = QtCore.pyqtSignal(int)
+    summary_line_changed = QtCore.pyqtSignal(int)
     def __init__(self, parent, limit=default_limit):
         QtGui.QPlainTextEdit.__init__(self, parent)
+        self.summary_line = -1
+        self.draw_summary_limit = False
         self.text_font = QtGui.QFont('Bitstream Vera Sans Mono', 10)
 #        self.text_font.setStyleHint(QtGui.QFont.TypeWriter)
         self.setLineWrapMode(QtGui.QPlainTextEdit.NoWrap)
@@ -115,21 +139,28 @@ class TextEdit(QtGui.QPlainTextEdit):
         self.highlight = Highlighter(self.document(), limit)
         self.lineNumbers = LineNumbers(self)
 
-        self.title_line.connect(self.highlight.set_title_line)
+        self.summary_line_changed.connect(self.highlight.set_summary_line)
         self.textChanged.connect(self.changed)
+        self.textChanged.connect(self.pos_update)
         self.blockCountChanged.connect(self.updateLineNumbersWidth)
         self.updateRequest.connect(self.updateLineNumbers)
         self.updateLineNumbersWidth()
+        self.cursorPositionChanged.connect(self.pos_update)
 
     def changed(self):
         document = self.document()
-        title_line = -1
+        summary_line = -1
         for l in range(document.blockCount()):
             block = document.findBlockByLineNumber(l)
-            if len(block.text().simplified()) > 0 and not block.text().simplified().startsWith('#'):
-                title_line = l
+            if len(block.text().simplified()) > 0 and not block.text().startsWith('#'):
+                summary_line = l
                 break
-        self.title_line.emit(title_line)
+        self.summary_line_changed.emit(summary_line)
+        self.summary_line = summary_line
+
+    def pos_update(self):
+        self.draw_summary_limit = True if self.textCursor().blockNumber() == self.summary_line else False
+        self.viewport().update()
 
     def insertFromMimeData(self, source):
         if source.hasText():
@@ -139,6 +170,10 @@ class TextEdit(QtGui.QPlainTextEdit):
         qp = QtGui.QPainter(self.viewport())
         qp.setPen(self.limit_pen)
         qp.drawLine(self.limit, 0, self.limit, self.height())
+        if self.draw_summary_limit:
+            _summary_limit = self.metrics.width('a')*summary_limit
+            qp.drawRect(self.contentsRect().x()-1, self.contentsRect().y()-1+(self.textCursor().blockNumber()*self.metrics.height()), _summary_limit+2, self.metrics.height()+2)
+#            qp.drawLine(_summary_limit, 0, _summary_limit, self.metrics.height())
         QtGui.QPlainTextEdit.paintEvent(self, event)
 
     def updateLineNumbersWidth(self):
@@ -222,12 +257,18 @@ class Editor(QtGui.QMainWindow):
         self.status.addWidget(len_lbl)
         self.size_lbl = QtGui.QLabel('0 bytes')
         self.status.addWidget(self.size_lbl)
+        spacer = QtGui.QWidget()
+        spacer.setFixedSize(20, 1)
+        self.status.addWidget(spacer)
+        self.valid = QtGui.QLabel()
+        self.status.addWidget(self.valid)
 
         self.status_icon = StatusIcon(self, NEW)
         self.status.addPermanentWidget(self.status_icon)
 
         self.editor.cursorPositionChanged.connect(self.pos_update)
         self.editor.textChanged.connect(self.size_update)
+        self.editor.textChanged.connect(self.check)
         width = self.editor.margin+self.editor.metrics.maxWidth()*(self.limit+8)
         self.resize(width, width*.75)
 
@@ -236,6 +277,15 @@ class Editor(QtGui.QMainWindow):
             self.editor.insertPlainText(self.base_commit)
             self.file = None
         else:
+            git_status = getoutput('git status -s').split('\n')
+            staged = []
+            unstaged = []
+            for l in git_status:
+                if l.startswith(' '):
+                    unstaged.append(l[3:])
+                else:
+                    staged.append(l[3:])
+            self.git_status = staged, unstaged
             self.file = argv[1]
             with open(self.file, 'rb') as commit:
                 text = QtCore.QString().fromUtf8(commit.read())
@@ -261,6 +311,17 @@ class Editor(QtGui.QMainWindow):
                     state = SAVED
         self.setWindowTitle('Commit editor for "{}" ({})'.format(self.repo, states[state]))
         self.status_icon.setState(state)
+
+    def check(self):
+        content = False
+        for l in str(self.document.toPlainText().toUtf8()).split('\n'):
+            if l.startswith('#') or not len(l.strip()): continue
+            content = True
+            break
+        if not content:
+            self.valid.setText('Commit message empty!')
+        else:
+            self.valid.setText('')
 
     def size_update(self):
         size = len(self.document.toPlainText().toUtf8())
