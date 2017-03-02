@@ -74,7 +74,7 @@ class Highlighter(QtGui.QSyntaxHighlighter):
             self.setFormat(0, len(text), self.comment)
             if text == '# Changes to be committed:':
                 self.setCurrentBlockState(COMMIT)
-            elif text == '# Untracked files:':
+            elif text in ['# Untracked files:', '# Changes not staged for commit:']:
                 self.setCurrentBlockState(UNTRACK)
             elif self.previousBlockState() == COMMIT:
                 self.setFormat(1, len(text), self.commit_list)
